@@ -5,6 +5,16 @@ Python interpreter (> 2.6), youtube-dl, BeautifulSoup4 and it's
 platform independent.  It should work fine in your Unix box, in
 Windows or in Mac OS X.
 
+# INSTALLATION
+
+Optionally create and activate a virtual environment with:
+
+    virtualenv venv && source ./venv/bin/activate
+
+Install dependencies with:
+
+    pip install -r requirements.txt
+
 # DEPENDENCIES
 
 ## youtube-dl
@@ -40,7 +50,7 @@ Python implementation for edx-downloader
 
 The original file was written by @shk3 in/for `python3` then updated
 by @emadshaaban92 for python2, and migrated for versions superior to
-2.6 by @iemejia.
+2.6 by @iemejia. Parallised downloads added by boosh.
 
 # Quick Start
 
