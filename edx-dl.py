@@ -39,14 +39,14 @@ except:
 import argparse
 import getpass
 import json
+import multiprocessing
 import os
-import os.path
 import re
 import sys
+import traceback
 
 from subprocess import Popen, PIPE
 from datetime import timedelta, datetime
-
 from bs4 import BeautifulSoup
 
 OPENEDX_SITES = {
@@ -73,6 +73,8 @@ COURSEWARE_SEL = OPENEDX_SITES['edx']['courseware-selector']
 NO_WEEKS = frozenset()
 
 YOUTUBE_VIDEO_ID_LENGTH = 11
+
+MAX_VIDEO_DOWNLOAD_TIME = 30 * 60           # max amount of time to wait to download video
 
 ## If nothing else is chosen, we chose the default user agent:
 
@@ -257,6 +259,11 @@ def parse_args():
                         dest='platform',
                         help='OpenEdX platform, currently either "edx", "stanford" or "usyd-sit"',
                         default='edx')
+    parser.add_argument('-w',
+                        '--workers',
+                        default=4,
+                        type=int,
+                        help="Number of videos to download in parallel.")
 
     args = parser.parse_args()
     return args
@@ -429,10 +436,29 @@ def main():
 
     print("[info] Output directory: " + args.output_dir)
 
-    # Download Videos
+    return download_videos(video_link=video_link, subsUrls=subsUrls, sections=sections,
+                    args=args, selected_course=selected_course, headers=headers)
+
+
+def download_videos(video_link, subsUrls, sections, args, selected_course, headers):
+    """
+    Download all videos in parallel
+
+    :param video_link:
+    :param subsUrls:
+    :param sections:
+    :param args:
+    :param selected_course:
+    :param headers:
+    :return:
+    """
+    pool = multiprocessing.Pool(processes=args.workers)
+
+    results = []
+
     last_section = None
     c = 0
-    for v, s, section in zip(video_link, subsUrls, sections):
+    for v, subsUrl, section in zip(video_link, subsUrls, sections):
         if last_section != section:
             c = 0
         last_section = section
@@ -451,27 +477,69 @@ def main():
             cmd.append('--write-sub')
         cmd.append(str(v))
 
-        popen_youtube = Popen(cmd, stdout=PIPE, stderr=PIPE)
+        results.append(pool.apply_async(func=download_video,
+                                        kwds={
+                                            'cmd': cmd,
+                                            'subtitles': args.subtitles,
+                                            'target_dir': target_dir,
+                                            'filename_prefix': filename_prefix,
+                                            'subsUrl': subsUrl,
+                                            'headers': headers
+                                        }))
 
-        youtube_stdout = b''
-        while True:  # Save output to youtube_stdout while this being echoed
-            tmp = popen_youtube.stdout.read(1)
-            youtube_stdout += tmp
-            print(tmp, end="")
-            sys.stdout.flush()
-            # do it until the process finish and there isn't output
-            if tmp == b"" and popen_youtube.poll() is not None:
-                break
+    num_successful = 0
+    num_failed = 0
 
-        if args.subtitles:
-            filename = get_filename(target_dir, filename_prefix)
-            subs_filename = os.path.join(target_dir, filename + '.srt')
-            if not os.path.exists(subs_filename):
-                subs_string = edx_get_subtitle(s, headers)
-                if subs_string:
-                    print('[info] Writing edX subtitles: %s' % subs_filename)
-                    open(os.path.join(os.getcwd(), subs_filename),
-                         'wb+').write(subs_string.encode('utf-8'))
+    for result in results:
+        try:
+            res = result.get(MAX_VIDEO_DOWNLOAD_TIME)
+        except Exception as e:
+            print("[error] Caught exception downloading video: %s" % e)
+            traceback.print_exc()
+            num_failed += 1
+            continue
+
+        if result.successful():
+            num_successful += 1
+        else:
+            num_failed += 1
+
+    print("[info] Successfully downloaded %d out of %d files. %d failed" %
+          (num_successful, len(results), num_failed))
+
+
+def download_video(cmd, subtitles, target_dir, filename_prefix, subsUrl, headers):
+    """
+    Download an individual video from youtube
+
+    :param cmd: youtube-dl command to execute
+    :param subtitles: Whether to download subtitles
+    :param target_dir: Path to write the files to
+    :param filename_prefix:
+    :param subsUrl: URL of subtitle
+    :param headers: HTTP headers to send with the request
+    """
+    popen_youtube = Popen(cmd, stdout=PIPE, stderr=PIPE)
+
+    youtube_stdout = b''
+    while True:  # Save output to youtube_stdout while this being echoed
+        tmp = popen_youtube.stdout.read(1)
+        youtube_stdout += tmp
+        print(tmp, end="")
+        sys.stdout.flush()
+        # do it until the process finish and there isn't output
+        if tmp == b"" and popen_youtube.poll() is not None:
+            break
+
+    if subtitles:
+        filename = get_filename(target_dir, filename_prefix)
+        subs_filename = os.path.join(target_dir, filename + '.srt')
+        if not os.path.exists(subs_filename):
+            subs_string = edx_get_subtitle(subsUrl, headers)
+            if subs_string:
+                print('[info] Writing edX subtitles: %s' % subs_filename)
+                open(os.path.join(os.getcwd(), subs_filename),
+                     'wb+').write(subs_string.encode('utf-8'))
 
 
 def get_filename(target_dir, filename_prefix):
